@@ -1,0 +1,14 @@
+# Clave secreta para las sesiones de Flask
+SECRET_KEY=tu-clave-secreta-muy-segura-aqui
+
+# MongoDB Atlas Connection String
+# Formato: mongodb+srv://username:password@cluster.mongodb.net/database_name?retryWrites=true&w=majority
+MONGO_URI=mongodb+srv://tu-usuario:tu-password@tu-cluster.mongodb.net/chatbot_escolar?retryWrites=true&w=majority
+
+# Gemini API Key
+# Obtén tu clave en: https://makersuite.google.com/app/apikey
+GEMINI_API_KEY=tu-gemini-api-key-aqui
+
+# Perspective API Key
+# Obtén tu clave en: https://developers.perspectiveapi.com/s/
+PERSPECTIVE_API_KEY=tu-perspective-api-key-aqui
