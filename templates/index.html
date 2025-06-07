@@ -358,6 +358,16 @@
             box-shadow: 0 2px 8px rgba(25, 118, 210, 0.3);
         }
 
+        .quick-action.auto-response {
+            background-color: #e8f5e9;
+            border-color: #a5d6a7;
+        }
+
+        .quick-action.interactive {
+            background-color: #e3f2fd;
+            border-color: #90caf9;
+        }
+
         /* Loading Animation */
         .typing-indicator {
             display: flex;
@@ -415,7 +425,7 @@
             <svg width="40" height="40" viewBox="0 0 24 24" fill="white">
                 <path d="M12 2L2 7V17C2 17.55 2.45 18 3 18H8V12H10V18H15V10.19L12 7.69L9 10.19V8.3L12 5.69L21 13.3V8L12 2Z"/>
             </svg>
-            <h1>Aula Virtual - Colegio El Carmelo</h1>
+            <h1>Aula Virtual</h1>
         </div>
         <div class="user-info">
             <span id="userName">Bienvenido</span>
@@ -488,22 +498,23 @@
         </div>
 
 <!-- Chat Interface -->
-<div class="chat-interface" id="chatInterface" style="display: none; height: 100%; flex-direction: column;">
-    <div class="chat-messages" id="chatMessages" style="flex: 1; overflow-y: auto; padding: 20px; background-color: #f8f9fa;"></div>
+<div class="chat-interface" id="chatInterface">
+    <div class="chat-messages" id="chatMessages"></div>
     
-    <div class="quick-actions" style="padding: 10px 20px; display: flex; gap: 10px; flex-wrap: wrap; background-color: white; border-top: 1px solid #eee;">
-        <div class="quick-action" onclick="sendQuickMessage('Quiero hablar con el asistente de IA')">💬 Hablar con IA</div>
-        <div class="quick-action" onclick="sendQuickMessage('Muéstrame el cronograma de actividades')">📅 Cronograma de actividades</div>
-        <div class="quick-action" onclick="sendQuickMessage('Quiero ver mis notas actuales')">📊 Notas actuales</div>
-        <div class="quick-action" onclick="sendQuickMessage('Dame un resumen de mis consultas')">📝 Resumen de consultas</div>
+    <!-- Agregar style="display: none;" inicialmente -->
+    <div class="quick-actions" id="quickActions" style="padding: 10px 20px; display: none; gap: 10px; flex-wrap: wrap; background-color: white; border-top: 1px solid #eee;">
+        <div class="quick-action interactive" onclick="selectOption('hablar')">💬 Hablar con IA</div>
+        <div class="quick-action auto-response" onclick="selectOption('cronograma')">📅 Cronograma de actividades</div>
+        <div class="quick-action auto-response" onclick="selectOption('notas')">📊 Notas actuales</div>
+        <div class="quick-action auto-response" onclick="selectOption('resumen')">📝 Resumen de consultas</div>
     </div>
-</div>
 
-    <div class="chat-input-container" style="padding: 20px; background-color: white; border-top: 1px solid #eee;">
-        <div class="chat-input-wrapper" style="display: flex; gap: 10px;">
-            <input type="text" class="chat-input" id="chatInput" placeholder="Escribe tu mensaje..." 
-                   onkeypress="handleKeyPress(event)" style="flex: 1; padding: 12px 16px; border: 2px solid #ddd; border-radius: 25px; font-size: 14px;">
-            <button class="send-button" onclick="sendMessage()" style="background-color: #3498db; color: white; border: none; padding: 12px 20px; border-radius: 50%; cursor: pointer;">
+    <div class="chat-input-container">
+        <div class="chat-input-wrapper">
+            <!-- Agregar disabled="true" al input -->
+            <input type="text" class="chat-input" id="chatInput" placeholder="Selecciona una opción para continuar..." 
+                   onkeypress="handleKeyPress(event)" disabled="true">
+            <button class="send-button" id="sendButton" onclick="sendMessage()" disabled="true">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
                     <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
                 </svg>
@@ -517,14 +528,27 @@
         let isAuthenticated = false;
         let currentUser = null;
         let messageId = 0;
+        let optionSelected = false;
 
         // Toggle Chatbot
         function toggleChatbot() {
             const chatbotWindow = document.getElementById('chatbotWindow');
             chatbotWindow.classList.toggle('active');
-            
+    
             if (chatbotWindow.classList.contains('active') && !isAuthenticated) {
                 document.getElementById('dniInput').focus();
+            }
+    
+            // Si se cierra el chat, resetear el estado
+            if (!chatbotWindow.classList.contains('active')) {
+                optionSelected = false;
+                document.getElementById('chatInput').disabled = true;
+                document.getElementById('sendButton').disabled = true;
+                document.getElementById('chatInput').placeholder = "Selecciona una opción para continuar...";
+        
+                // Quitar selección de botones
+                const buttons = document.querySelectorAll('.quick-action');
+                buttons.forEach(btn => btn.classList.remove('selected'));
             }
         }
 
@@ -560,15 +584,55 @@
             }
         }
 
+        function selectOption(option) {
+            optionSelected = true;
+    
+            document.getElementById('chatInput').disabled = false;
+            document.getElementById('sendButton').disabled = false;
+            document.getElementById('chatInput').placeholder = "Escribe tu mensaje...";
+    
+            const buttons = document.querySelectorAll('.quick-action');
+            buttons.forEach(btn => btn.classList.remove('selected'));
+            event.target.classList.add('selected');
+    
+            let message = '';
+            switch(option) {
+                case 'hablar':
+                    message = 'Quiero hablar con el asistente de IA';
+                    addBotMessage('¡Hola! Soy tu asistente virtual. ¿Cómo puedo ayudarte el día de hoy?', false);
+                    break;
+                case 'cronograma':
+                    message = 'Muéstrame el cronograma de actividades';
+                    sendQuickMessage(message);
+                    return;
+                case 'notas':
+                    message = 'Quiero ver mis notas actuales';
+                    sendQuickMessage(message);
+                    return;
+                case 'resumen':
+                    message = 'Dame un resumen de mis consultas';
+                    sendQuickMessage(message);
+                    return;
+            }
+    
+                document.getElementById('chatInput').focus();
+            }
+
         // Show Chat Interface
         function showChatInterface() {
             document.getElementById('dniLogin').style.display = 'none';
             document.getElementById('chatInterface').style.display = 'flex';
-            document.getElementById('chatInput').focus();
+            document.getElementById('quickActions').style.display = 'flex';
+            addBotMessage(`¡Hola, ${currentUser.nombre}! 👋\n\nPor favor, selecciona una de las opciones disponibles para comenzar.`, false);
         }
 
         // Send Message
         async function sendMessage() {
+            if (!optionSelected) {
+                addBotMessage('Por favor, selecciona una de las opciones disponibles antes de enviar un mensaje.', false);
+                return;
+            }
+    
             const chatInput = document.getElementById('chatInput');
             const message = chatInput.value.trim();
 
@@ -576,7 +640,7 @@
 
             addUserMessage(message);
             chatInput.value = '';
-            
+    
             showTypingIndicator();
 
             try {
@@ -584,7 +648,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                    },
+                },
                     body: JSON.stringify({ message: message })
                 });
 
@@ -604,8 +668,21 @@
 
         // Quick Messages
         function sendQuickMessage(message) {
+            // Temporalmente habilitar para enviar
+            const wasDisabled = document.getElementById('chatInput').disabled;
+            document.getElementById('chatInput').disabled = false;
+            document.getElementById('sendButton').disabled = false;
+    
             document.getElementById('chatInput').value = message;
             sendMessage();
+    
+            // Si estaba deshabilitado, volver a deshabilitar
+            if (wasDisabled && !optionSelected) {
+                setTimeout(() => {
+                    document.getElementById('chatInput').disabled = true;
+                    document.getElementById('sendButton').disabled = true;
+                }, 100);
+            }
         }
 
         // Add User Message
@@ -785,7 +862,7 @@
         }
 
         function handleKeyPress(event) {
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' && optionSelected) {
                 sendMessage();
             }
         }

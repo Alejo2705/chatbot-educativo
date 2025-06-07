@@ -1,1 +1,23 @@
 /* Estilos adicionales */ 
+.chat-input:disabled {
+    background-color: #f5f5f5;
+    cursor: not-allowed;
+}
+
+.send-button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+.quick-action.selected {
+    background-color: #1976d2;
+    color: white;
+}
+
+/* Mensaje de bienvenida */
+.welcome-message {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    font-style: italic;
+}
