@@ -112,29 +112,74 @@ def save_query(user_dni, message, response, topic=None):
     queries_collection.insert_one(query)
 
 def get_ai_response(message, context=None):
-    """Obtiene respuesta de Gemini API"""
+    """Procesa el mensaje y decide si usar Gemini o responder directamente"""
     try:
         # Primero verificar si es un comando especial
         if message.startswith('/'):
             return handle_command(message)
         
-        # Construir el prompt con contexto educativo
-        prompt = f"""Eres un asistente educativo amigable para estudiantes de secundaria. 
-        Tu objetivo es ayudar con dudas académicas, explicar conceptos de manera clara y motivar el aprendizaje.
+        # Verificar si es una solicitud de los botones rápidos
+        message_lower = message.lower()
         
-        Contexto del estudiante: {context if context else 'Estudiante de secundaria'}
+        # SOLO "Hablar con IA" usa Gemini
+        if "hablar con el asistente" in message_lower or "hablar con ia" in message_lower:
+            prompt = f"""Eres un asistente educativo amigable para estudiantes de secundaria. 
+            Tu objetivo es ayudar con dudas académicas, explicar conceptos de manera clara y motivar el aprendizaje.
+            Los mensajes que brindes no deben ser extensos. Trata de ser claro y conciso.
+            Si se requiere una explicación detallada, el usuario debe solicitarlo
+            
+            Contexto del estudiante: {context if context else 'Estudiante de secundaria'}
+            
+            El estudiante quiere hablar contigo. Preséntate amablemente y ofrece tu ayuda.
+            
+            Usa formato markdown para resaltar información importante con **negritas**."""
+            
+            response = model.generate_content(prompt)
+            return response.text
         
-        Pregunta del estudiante: {message}
+        # Las siguientes opciones NO usan Gemini, solo consultan la BD
         
-        Por favor, responde de manera clara, educativa y motivadora. Si es una pregunta académica, 
-        proporciona una explicación paso a paso cuando sea apropiado."""
+        # Cronograma de actividades - NO USA GEMINI
+        elif "cronograma" in message_lower and "actividades" in message_lower:
+            return get_schedule_response()
         
-        response = model.generate_content(prompt)
-        return response.text
+        # Notas actuales - NO USA GEMINI
+        elif "notas actuales" in message_lower or "ver mis notas" in message_lower:
+            return get_grades_response(session.get('user_dni'))
+        
+        # Resumen de consultas - NO USA GEMINI
+        elif "resumen" in message_lower and "consultas" in message_lower:
+            return get_weekly_summary_response(session.get('user_dni'))
+        
+        # Comando de problema extra - NO USA GEMINI inicialmente
+        elif "problema extra" in message_lower:
+            topic = "matemáticas"  # Por defecto
+            # Extraer el tema si se especifica
+            if " de " in message_lower:
+                topic = message_lower.split(" de ")[-1].strip()
+            return get_extra_problem(topic)
+        
+        # Si no es ningún botón rápido, entonces SÍ usar Gemini para consultas generales
+        else:
+            prompt = f"""Eres un asistente educativo amigable para estudiantes de secundaria. 
+            Tu objetivo es ayudar con dudas académicas, explicar conceptos de manera clara y motivar el aprendizaje.
+            
+            Contexto del estudiante: {context if context else 'Estudiante de secundaria'}
+            
+            Pregunta del estudiante: {message}
+            
+            Por favor, responde de manera clara, educativa y motivadora. Si es una pregunta académica, 
+            proporciona una explicación paso a paso cuando sea apropiado.
+            
+            Usa formato markdown para resaltar información importante con **negritas**."""
+            
+            response = model.generate_content(prompt)
+            return response.text
+            
     except Exception as e:
-        print(f"Error con Gemini API: {e}")
+        print(f"Error procesando mensaje: {e}")
         return "Lo siento, hubo un error al procesar tu pregunta. Por favor, intenta de nuevo."
-
+    
 def handle_command(command):
     """Maneja comandos especiales del chatbot"""
     parts = command.split(' ', 1)
@@ -562,6 +607,124 @@ def init_sample_data():
     for resource in sample_resources:
         if not resources_collection.find_one({'titulo': resource['titulo']}):
             resources_collection.insert_one(resource)
+    
+def get_schedule_response():
+    """Obtiene el cronograma directamente de la BD - NO USA GEMINI"""
+    try:
+        schedule = list(db.cronograma.find().sort('fecha', 1).limit(10))
+        
+        if not schedule:
+            return "📅 No hay eventos registrados en el cronograma."
+        
+        response = "📅 **Cronograma de Actividades**\n\n"
+        for event in schedule:
+            fecha = datetime.strptime(event['fecha'], '%Y-%m-%d').strftime('%d de %B')
+            response += f"• **{fecha}**: {event['evento']}\n"
+            if 'tipo' in event:
+                response += f"  _Tipo: {event['tipo']}_\n"
+        
+        response += "\n_Estos son los próximos eventos del colegio._"
+        return response
+    except Exception as e:
+        print(f"Error obteniendo cronograma: {e}")
+        return "Error al obtener el cronograma. Por favor, intenta más tarde."
+
+def get_grades_response(dni):
+    """Obtiene las notas directamente de la BD - NO USA GEMINI"""
+    try:
+        if not dni:
+            return "❌ No puedo acceder a tus notas. Por favor, inicia sesión correctamente."
+        
+        notas = list(db.notas.find({'dni': dni}))
+        
+        if not notas:
+            return "📊 No se encontraron notas registradas para tu usuario."
+        
+        response = "📊 **Tus Notas Actuales**\n\n"
+        
+        # Calcular promedio general
+        suma_total = 0
+        count = 0
+        
+        for nota in notas:
+            curso = nota['curso']
+            promedio = nota.get('promedio_general', 0)
+            suma_total += float(promedio)
+            count += 1
+            
+            response += f"**{curso}**: {promedio}\n"
+            
+            # Mostrar detalles del último bimestre
+            if 'bimestre2' in nota:
+                b2 = nota['bimestre2']
+                response += f"  • Último examen: {b2.get('examen', 'N/A')}\n"
+        
+        if count > 0:
+            promedio_general = suma_total / count
+            response += f"\n**Promedio General**: {promedio_general:.1f}\n"
+            
+            if promedio_general >= 16:
+                response += "\n¡Excelente trabajo! 🌟 Sigue así."
+            elif promedio_general >= 14:
+                response += "\n¡Buen trabajo! 👍 Puedes mejorar aún más."
+            else:
+                response += "\n¡Ánimo! 💪 Con esfuerzo puedes mejorar."
+        
+        return response
+    except Exception as e:
+        print(f"Error obteniendo notas: {e}")
+        return "Error al obtener las notas. Por favor, intenta más tarde."
+
+def get_weekly_summary_response(dni):
+    """Obtiene el resumen semanal directamente de la BD - NO USA GEMINI"""
+    try:
+        if not dni:
+            return "❌ No puedo acceder a tu historial. Por favor, inicia sesión correctamente."
+        
+        week_ago = datetime.now() - timedelta(days=7)
+        
+        queries = list(db.consultas.find({
+            'dni': dni,
+            'timestamp': {'$gte': week_ago}
+        }).sort('timestamp', -1))
+        
+        if not queries:
+            return "📝 No has realizado consultas en los últimos 7 días.\n\n¡Anímate a hacer preguntas! Estoy aquí para ayudarte."
+        
+        response = "📝 **Resumen de tus Consultas - Última Semana**\n\n"
+        response += f"**Total de consultas**: {len(queries)}\n\n"
+        
+        # Agrupar por tema
+        topics = {}
+        for query in queries:
+            topic = query.get('topic', 'General')
+            if topic not in topics:
+                topics[topic] = 0
+            topics[topic] += 1
+        
+        response += "**Temas consultados**:\n"
+        for topic, count in sorted(topics.items(), key=lambda x: x[1], reverse=True):
+            response += f"• {topic}: {count} {'consulta' if count == 1 else 'consultas'}\n"
+        
+        response += "\n**Últimas 5 consultas**:\n"
+        for i, query in enumerate(queries[:5], 1):
+            fecha = query['timestamp'].strftime('%d/%m %H:%M')
+            pregunta = query['message'][:60] + '...' if len(query['message']) > 60 else query['message']
+            response += f"{i}. [{fecha}] _{pregunta}_\n"
+        
+        # Análisis simple
+        consultas_por_dia = len(queries) / 7
+        response += f"\n**Promedio**: {consultas_por_dia:.1f} consultas por día"
+        
+        if consultas_por_dia > 3:
+            response += "\n\n¡Excelente participación! 🌟 Tu curiosidad te llevará lejos."
+        else:
+            response += "\n\n¡No dudes en preguntar más! 📚 Estoy aquí para ayudarte."
+        
+        return response
+    except Exception as e:
+        print(f"Error obteniendo resumen: {e}")
+        return "Error al obtener el resumen. Por favor, intenta más tarde."
 
 if __name__ == '__main__':
     init_sample_data()
