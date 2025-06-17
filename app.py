@@ -10,9 +10,12 @@ import re
 import random
 from dotenv import load_dotenv
 import json
+from local_ai import LocalEducationalAI, get_ai_response_with_fallback
 
 # Cargar variables de entorno
 load_dotenv()
+local_ai = LocalEducationalAI()
+print(f"IA Local inicializada. Modelos cargados: {list(local_ai.get_statistics().keys())}")
 
 app = Flask(__name__)
 CORS(app)
@@ -112,7 +115,7 @@ def save_query(user_dni, message, response, topic=None):
     queries_collection.insert_one(query)
 
 def get_ai_response(message, context=None):
-    """Procesa el mensaje y decide si usar Gemini o responder directamente"""
+    """Procesa el mensaje y decide si usar IA local, Gemini o responder directamente"""
     try:
         # Primero verificar si es un comando especial
         if message.startswith('/'):
@@ -121,7 +124,7 @@ def get_ai_response(message, context=None):
         # Verificar si es una solicitud de los botones rápidos
         message_lower = message.lower()
         
-        # SOLO "Hablar con IA" usa Gemini
+        # SOLO "Hablar con IA" puede usar el sistema de IA
         if "hablar con el asistente" in message_lower or "hablar con ia" in message_lower:
             prompt = f"""Eres un asistente educativo amigable para estudiantes de secundaria. 
             Tu objetivo es ayudar con dudas académicas, explicar conceptos de manera clara y motivar el aprendizaje.
@@ -137,21 +140,21 @@ def get_ai_response(message, context=None):
             response = model.generate_content(prompt)
             return response.text
         
-        # Las siguientes opciones NO usan Gemini, solo consultan la BD
+        # Las siguientes opciones NO usan ninguna IA, solo consultan la BD
         
-        # Cronograma de actividades - NO USA GEMINI
+        # Cronograma de actividades - NO USA IA
         elif "cronograma" in message_lower and "actividades" in message_lower:
             return get_schedule_response()
         
-        # Notas actuales - NO USA GEMINI
+        # Notas actuales - NO USA IA
         elif "notas actuales" in message_lower or "ver mis notas" in message_lower:
             return get_grades_response(session.get('user_dni'))
         
-        # Resumen de consultas - NO USA GEMINI
+        # Resumen de consultas - NO USA IA
         elif "resumen" in message_lower and "consultas" in message_lower:
             return get_weekly_summary_response(session.get('user_dni'))
         
-        # Comando de problema extra - NO USA GEMINI inicialmente
+        # Comando de problema extra - NO USA IA inicialmente
         elif "problema extra" in message_lower:
             topic = "matemáticas"  # Por defecto
             # Extraer el tema si se especifica
@@ -159,22 +162,16 @@ def get_ai_response(message, context=None):
                 topic = message_lower.split(" de ")[-1].strip()
             return get_extra_problem(topic)
         
-        # Si no es ningún botón rápido, entonces SÍ usar Gemini para consultas generales
+        # Si no es ningún botón rápido, entonces usar el SISTEMA DE DOS CAPAS
         else:
-            prompt = f"""Eres un asistente educativo amigable para estudiantes de secundaria. 
-            Tu objetivo es ayudar con dudas académicas, explicar conceptos de manera clara y motivar el aprendizaje.
+            # NUEVA LÓGICA: Primero IA local, luego Gemini si es necesario
+            response, source = get_ai_response_with_fallback(local_ai, message, model, context)
             
-            Contexto del estudiante: {context if context else 'Estudiante de secundaria'}
+            # Agregar indicador de fuente en modo debug
+            if os.getenv('DEBUG_MODE') == 'true':
+                response += f"\n\n_[Fuente: {source}]_"
             
-            Pregunta del estudiante: {message}
-            
-            Por favor, responde de manera clara, educativa y motivadora. Si es una pregunta académica, 
-            proporciona una explicación paso a paso cuando sea apropiado.
-            
-            Usa formato markdown para resaltar información importante con **negritas**."""
-            
-            response = model.generate_content(prompt)
-            return response.text
+            return response
             
     except Exception as e:
         print(f"Error procesando mensaje: {e}")
@@ -729,3 +726,33 @@ def get_weekly_summary_response(dni):
 if __name__ == '__main__':
     init_sample_data()
     app.run(debug=True, port=5000)
+
+@app.route('/admin/dataset', methods=['GET', 'POST'])
+def manage_dataset():
+    """Endpoint para gestionar el dataset de IA local (solo admin)"""
+    if 'user_dni' not in session or session.get('user_role') != 'admin':
+        return jsonify({'error': 'No autorizado'}), 403
+    
+    if request.method == 'GET':
+        # Obtener estadísticas
+        stats = local_ai.get_statistics()
+        return jsonify({
+            'statistics': stats,
+            'confidence_threshold': local_ai.confidence_threshold
+        })
+    
+    elif request.method == 'POST':
+        # Agregar nuevo par pregunta-respuesta
+        data = request.json
+        subject = data.get('subject')
+        question = data.get('question')
+        answer = data.get('answer')
+        
+        if not all([subject, question, answer]):
+            return jsonify({'error': 'Faltan datos'}), 400
+        
+        try:
+            local_ai.add_qa_pair(subject, question, answer)
+            return jsonify({'message': 'Par Q&A agregado exitosamente'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
