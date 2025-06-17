@@ -6,7 +6,7 @@ from local_ai import LocalEducationalAI
 import json
 import os
 
-# Datasets de ejemplo - REEMPLAZAR CON TUS DATASETS REALES
+# Datasets de ejemplo
 SAMPLE_DATASETS = {
     'matematicas': [
         {

@@ -151,7 +151,6 @@
             display: none;
             flex-direction: column;
             z-index: 999;
-            overflow: hidden;
             -webkit-overflow-scrolling: touch;
         }
 
@@ -198,23 +197,24 @@
 
         /* DNI Login */
         .dni-login {
-            padding: 30px;
-            text-align: center;
-            flex: 1;
+            height: 100%;
             display: flex;
             flex-direction: column;
-            justify-content: center;
+            justify-content: center;  /* Centra verticalmente */
+            align-items: center;      /* Centra horizontalmente */
+            padding: 20px;
             overflow-y: auto;
         }
 
         .dni-input {
-            width: 100%;
+            width: 80%;
             padding: 15px;
             font-size: 18px;
             border: 2px solid #ddd;
             border-radius: 10px;
             margin: 20px 0;
             text-align: center;
+            max-width: 300px;
         }
 
         .dni-submit {
@@ -226,6 +226,8 @@
             border-radius: 10px;
             cursor: pointer;
             transition: background-color 0.3s;
+            width: 80%;
+            max-width: 300px;
         }
 
         .dni-submit:hover {
