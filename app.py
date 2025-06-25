@@ -724,8 +724,8 @@ def get_weekly_summary_response(dni):
         return "Error al obtener el resumen. Por favor, intenta más tarde."
 
 if __name__ == '__main__':
-    init_sample_data()
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT',5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 @app.route('/admin/dataset', methods=['GET', 'POST'])
 def manage_dataset():
