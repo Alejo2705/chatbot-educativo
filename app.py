@@ -228,7 +228,7 @@ def validate_dni_endpoint():
     data = request.json
     dni = data.get('dni', '')
     client_ip = request.remote_addr
-    
+
     # Verificar intentos de DNI
     current_time = datetime.now()
     if client_ip in dni_attempts:
@@ -239,51 +239,38 @@ def validate_dni_endpoint():
                 'success': False,
                 'error': f'Demasiados intentos, espera {remaining_time} segundos e inténtalo otra vez'
             }), 429
-    
-    # Validar formato DNI
+
+    # Validar formato del DNI
     if not validate_dni(dni):
-        # Incrementar contador de intentos
-        if client_ip not in dni_attempts:
-            dni_attempts[client_ip] = {'attempts': 0, 'locked_until': None}
-        
-        dni_attempts[client_ip]['attempts'] += 1
-        
-        if dni_attempts[client_ip]['attempts'] >= MAX_DNI_ATTEMPTS:
-            dni_attempts[client_ip]['locked_until'] = current_time + timedelta(seconds=LOCKOUT_TIME)
-            return jsonify({
-                'success': False,
-                'error': 'Demasiados intentos, espera 30 segundos e inténtalo otra vez'
-            }), 429
-        
         return jsonify({
             'success': False,
-            'error': 'DNI no válido, inténtalo de nuevo'
+            'error': 'DNI inválido. Debe contener exactamente 8 dígitos.'
         }), 400
-    
+
     # Buscar usuario en la base de datos
     user = get_user_info(dni)
     if not user:
         return jsonify({
             'success': False,
-            'error': 'Usuario no encontrado'
+            'error': 'Usuario no encontrado.'
         }), 404
-    
-    # Guardar información del usuario en la sesión
-    session['user_dni'] = dni
-    session['user_name'] = user.get('nombre', 'Usuario')
-    session['user_role'] = user.get('rol', 'estudiante')
-    
-    # Resetear intentos
+
+    # Validar que el campo 'name' exista en el usuario
+    user_name = user.get('nombre', 'Usuario')
+
+    # Resetear intentos fallidos si la validación es exitosa
     if client_ip in dni_attempts:
         del dni_attempts[client_ip]
-    
+
+    # Responder con saludo personalizado
     return jsonify({
         'success': True,
+        'message': f'¡Hola, {user_name}! Bienvenido al chatbot.',
         'user': {
-            'nombre': user.get('nombre'),
-            'rol': user.get('rol')
+            'name': user_name,
+            'dni': user['dni']
         }
-    })
+    }), 200
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -345,10 +332,10 @@ def get_resources(topic):
     """Endpoint para obtener recursos adicionales de un tema"""
     if 'user_dni' not in session:
         return jsonify({'error': 'No autorizado'}), 401
-    
+
     resources = resources_collection.find({'topic': topic}).limit(3)
     resources_list = []
-    
+
     for resource in resources:
         resources_list.append({
             'tipo': resource.get('tipo'),
@@ -356,10 +343,10 @@ def get_resources(topic):
             'url': resource.get('url'),
             'descripcion': resource.get('descripcion')
         })
-    
+
     if not resources_list:
         return jsonify({'message': 'No tengo recursos disponibles para este tema, inténtalo con otro'})
-    
+
     return jsonify({'resources': resources_list})
 
 @app.route('/stats', methods=['GET'])
@@ -609,17 +596,17 @@ def get_schedule_response():
     """Obtiene el cronograma directamente de la BD - NO USA GEMINI"""
     try:
         schedule = list(db.cronograma.find().sort('fecha', 1).limit(10))
-        
+
         if not schedule:
             return "📅 No hay eventos registrados en el cronograma."
-        
+
         response = "📅 **Cronograma de Actividades**\n\n"
         for event in schedule:
             fecha = datetime.strptime(event['fecha'], '%Y-%m-%d').strftime('%d de %B')
             response += f"• **{fecha}**: {event['evento']}\n"
             if 'tipo' in event:
                 response += f"  _Tipo: {event['tipo']}_\n"
-        
+
         response += "\n_Estos son los próximos eventos del colegio._"
         return response
     except Exception as e:
@@ -631,42 +618,42 @@ def get_grades_response(dni):
     try:
         if not dni:
             return "❌ No puedo acceder a tus notas. Por favor, inicia sesión correctamente."
-        
+
         notas = list(db.notas.find({'dni': dni}))
-        
+
         if not notas:
             return "📊 No se encontraron notas registradas para tu usuario."
-        
+
         response = "📊 **Tus Notas Actuales**\n\n"
-        
+
         # Calcular promedio general
         suma_total = 0
         count = 0
-        
+
         for nota in notas:
             curso = nota['curso']
             promedio = nota.get('promedio_general', 0)
             suma_total += float(promedio)
             count += 1
-            
+
             response += f"**{curso}**: {promedio}\n"
-            
+
             # Mostrar detalles del último bimestre
             if 'bimestre2' in nota:
                 b2 = nota['bimestre2']
                 response += f"  • Último examen: {b2.get('examen', 'N/A')}\n"
-        
+
         if count > 0:
             promedio_general = suma_total / count
             response += f"\n**Promedio General**: {promedio_general:.1f}\n"
-            
+
             if promedio_general >= 16:
                 response += "\n¡Excelente trabajo! 🌟 Sigue así."
             elif promedio_general >= 14:
                 response += "\n¡Buen trabajo! 👍 Puedes mejorar aún más."
             else:
                 response += "\n¡Ánimo! 💪 Con esfuerzo puedes mejorar."
-        
+
         return response
     except Exception as e:
         print(f"Error obteniendo notas: {e}")
@@ -677,20 +664,20 @@ def get_weekly_summary_response(dni):
     try:
         if not dni:
             return "❌ No puedo acceder a tu historial. Por favor, inicia sesión correctamente."
-        
+
         week_ago = datetime.now() - timedelta(days=7)
-        
+
         queries = list(db.consultas.find({
             'dni': dni,
             'timestamp': {'$gte': week_ago}
         }).sort('timestamp', -1))
-        
+
         if not queries:
             return "📝 No has realizado consultas en los últimos 7 días.\n\n¡Anímate a hacer preguntas! Estoy aquí para ayudarte."
-        
+
         response = "📝 **Resumen de tus Consultas - Última Semana**\n\n"
         response += f"**Total de consultas**: {len(queries)}\n\n"
-        
+
         # Agrupar por tema
         topics = {}
         for query in queries:
@@ -698,26 +685,26 @@ def get_weekly_summary_response(dni):
             if topic not in topics:
                 topics[topic] = 0
             topics[topic] += 1
-        
+
         response += "**Temas consultados**:\n"
         for topic, count in sorted(topics.items(), key=lambda x: x[1], reverse=True):
             response += f"• {topic}: {count} {'consulta' if count == 1 else 'consultas'}\n"
-        
+
         response += "\n**Últimas 5 consultas**:\n"
         for i, query in enumerate(queries[:5], 1):
             fecha = query['timestamp'].strftime('%d/%m %H:%M')
             pregunta = query['message'][:60] + '...' if len(query['message']) > 60 else query['message']
             response += f"{i}. [{fecha}] _{pregunta}_\n"
-        
+
         # Análisis simple
         consultas_por_dia = len(queries) / 7
         response += f"\n**Promedio**: {consultas_por_dia:.1f} consultas por día"
-        
+
         if consultas_por_dia > 3:
             response += "\n\n¡Excelente participación! 🌟 Tu curiosidad te llevará lejos."
         else:
             response += "\n\n¡No dudes en preguntar más! 📚 Estoy aquí para ayudarte."
-        
+
         return response
     except Exception as e:
         print(f"Error obteniendo resumen: {e}")
