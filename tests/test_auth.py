@@ -1,4 +1,9 @@
+import os
 import unittest
+
+# Force the application to use a mock MongoDB for tests to avoid network calls
+os.environ['USE_MOCK_MONGO'] = 'true'
+
 from app import app
 
 class TestValidateDNIEndpoint(unittest.TestCase):

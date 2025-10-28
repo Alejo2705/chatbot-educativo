@@ -2,6 +2,11 @@ from flask import Flask, request, jsonify, render_template, session
 from flask_cors import CORS
 from flask_session import Session
 from pymongo import MongoClient
+# Optional mock for tests when Docker is not available
+try:
+    import mongomock
+except Exception:
+    mongomock = None
 from datetime import datetime, timedelta
 import google.generativeai as genai
 from googleapiclient import discovery
@@ -27,7 +32,14 @@ Session(app)
 
 # Configuración de MongoDB Atlas
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb+srv://usuario:password@cluster.mongodb.net/chatbot_escolar?retryWrites=true&w=majority')
-client = MongoClient(MONGO_URI)
+# Use a mongomock client when running tests or when explicitly requested via env var
+use_mock = os.getenv('USE_MOCK_MONGO', 'false').lower() == 'true'
+if use_mock:
+    if mongomock is None:
+        raise RuntimeError('mongomock is required when USE_MOCK_MONGO=true')
+    client = mongomock.MongoClient()
+else:
+    client = MongoClient(MONGO_URI)
 db = client['chatbot_escolar']
 users_collection = db['usuarios']
 conversations_collection = db['conversaciones']
@@ -67,6 +79,28 @@ FRASES_MOTIVADORAS = [
 dni_attempts = {}
 MAX_DNI_ATTEMPTS = 3
 LOCKOUT_TIME = 30  # segundos
+
+
+def record_failed_attempt(ip: str):
+    """Registra un intento fallido por IP y establece bloqueo si supera el límite."""
+    now = datetime.now()
+    if ip not in dni_attempts:
+        dni_attempts[ip] = {'count': 0, 'locked_until': None, 'last_attempt': now}
+
+    info = dni_attempts[ip]
+    # If already locked but expired, reset
+    if info.get('locked_until') and now >= info['locked_until']:
+        info['count'] = 0
+        info['locked_until'] = None
+
+    info['count'] = info.get('count', 0) + 1
+    info['last_attempt'] = now
+
+    # If reached or exceeded max, set locked_until for future attempts
+    if info['count'] >= MAX_DNI_ATTEMPTS:
+        info['locked_until'] = now + timedelta(seconds=LOCKOUT_TIME)
+    dni_attempts[ip] = info
+    return info
 
 def validate_dni(dni):
     """Valida que el DNI tenga 8 dígitos numéricos"""
@@ -160,7 +194,66 @@ def get_ai_response(message, context=None):
             # Extraer el tema si se especifica
             if " de " in message_lower:
                 topic = message_lower.split(" de ")[-1].strip()
-            return get_extra_problem(topic)
+            # Generate problem using helper so it can be tested/mocked
+            if 'user_dni' not in session:
+                return "No autorizado"
+            result = generate_extra_problem(topic, session['user_dni'], session.get('difficulty', 'intermedio'))
+            if isinstance(result, tuple) and len(result) == 2:
+                # error tuple
+                return result[0]
+            return result
+
+        # Recursos adicionales - busca en la colección de recursos y devuelve enlaces categorizados
+        elif "recursos adicionales" in message_lower or message_lower.startswith('recursos de') or "recursos de" in message_lower:
+            # Extraer tema
+            topic = None
+            if "recursos adicionales de" in message_lower:
+                topic = message_lower.split("recursos adicionales de")[-1].strip()
+            elif "recursos de" in message_lower:
+                topic = message_lower.split("recursos de")[-1].strip()
+            if not topic:
+                return "¿Sobre qué tema necesitas recursos adicionales?"
+
+            try:
+                # Buscar recursos por tema (case-insensitive)
+                pattern = re.compile(re.escape(topic), re.IGNORECASE)
+                found = list(resources_collection.find({'topic': pattern}).limit(10))
+
+                if not found:
+                    # Mensaje exacto esperado por CP006
+                    return "No tengo recursos disponibles para este tema, inténtalo con otro"
+
+                # Agrupar por tipo
+                grouped = {}
+                for r in found:
+                    tipo = r.get('tipo', 'otro').lower()
+                    grouped.setdefault(tipo, []).append(r)
+
+                # Preparar al menos video, artículo, ejercicio
+                parts = []
+                for t in ['video', 'artículo', 'articulo', 'ejercicio', 'otro']:
+                    items = grouped.get(t, [])
+                    if items:
+                        # Normalizar título del tipo
+                        display_type = 'Artículo' if t in ('artículo', 'articulo') else t.title()
+                        parts.append(f"{display_type}s:")
+                        for it in items[:3]:
+                            titulo = it.get('titulo', 'Sin título')
+                            url = it.get('url', '')
+                            desc = it.get('descripcion', '')
+                            parts.append(f"- {titulo} ({desc}) — {url}")
+
+                response_text = "\n".join(parts)
+                # Asegurar que devolvemos al menos tres enlaces si es posible
+                total_links = sum(len(v) for v in grouped.values())
+                if total_links < 3:
+                    response_text += f"\n\nEncontré {total_links} recurso(s). Intenta con otro tema o carga más recursos."
+
+                return response_text
+            except Exception as e:
+                # Log the error and return the exact message expected by CP007
+                print(f"Error buscando recursos: {e}")
+                return "Error al obtener recursos adicionales, por favor vuelve a intentarlo más tarde"
         
         # Si no es ningún botón rápido, entonces usar el SISTEMA DE DOS CAPAS
         else:
@@ -242,6 +335,8 @@ def validate_dni_endpoint():
 
     # Validar formato del DNI
     if not validate_dni(dni):
+        # Registrar intento fallido
+        record_failed_attempt(client_ip)
         return jsonify({
             'success': False,
             'error': 'DNI inválido. Debe contener exactamente 8 dígitos.'
@@ -250,9 +345,12 @@ def validate_dni_endpoint():
     # Buscar usuario en la base de datos
     user = get_user_info(dni)
     if not user:
+        # Para el flujo de login, responder con un mensaje claro al usuario
+        # indicando que el DNI ingresado no corresponde a un usuario registrado.
+        record_failed_attempt(client_ip)
         return jsonify({
             'success': False,
-            'error': 'Usuario no encontrado.'
+            'error': 'DNI no es válido. Por favor, inténtalo de nuevo.'
         }), 404
 
     # Validar que el campo 'name' exista en el usuario
@@ -262,6 +360,18 @@ def validate_dni_endpoint():
     if client_ip in dni_attempts:
         del dni_attempts[client_ip]
 
+    # Establecer sesión del usuario para mantener estado autenticado
+    try:
+        session['user_dni'] = user.get('dni')
+        session['user_name'] = user_name
+        session['user_role'] = user.get('rol', 'estudiante')
+        # Hacer la sesión permanente por defecto (configurable por .env)
+        app.permanent_session_lifetime = timedelta(minutes=int(os.getenv('SESSION_TIMEOUT_MIN', '60')))
+        session.permanent = True
+    except Exception as e:
+        # Si por alguna razón no se puede establecer la sesión, seguir devolviendo la respuesta
+        print(f"Warning: no se pudo establecer la sesión: {e}")
+
     # Responder con saludo personalizado
     return jsonify({
         'success': True,
@@ -270,6 +380,34 @@ def validate_dni_endpoint():
             'name': user_name,
             'dni': user['dni']
         }
+    }), 200
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    """Cierra la sesión del usuario"""
+    try:
+        session_keys = ['user_dni', 'user_name', 'user_role', 'conversation_context', 'difficulty']
+        for k in session_keys:
+            session.pop(k, None)
+        # Also clear any other session data
+        session.clear()
+        return jsonify({'message': 'Sesión cerrada'}), 200
+    except Exception as e:
+        print(f"Error cerrando sesión: {e}")
+        return jsonify({'message': 'Error al cerrar sesión'}), 500
+
+
+@app.route('/me', methods=['GET'])
+def me():
+    """Devuelve información básica del usuario autenticado."""
+    if 'user_dni' not in session:
+        return jsonify({'error': 'No autorizado'}), 401
+
+    return jsonify({
+        'dni': session.get('user_dni'),
+        'name': session.get('user_name'),
+        'role': session.get('user_role')
     }), 200
 
 @app.route('/chat', methods=['POST'])
@@ -449,52 +587,56 @@ def get_weekly_summary():
 @app.route('/extra_problem', methods=['POST'])
 def get_extra_problem():
     """Endpoint para generar problemas extra"""
+    # This endpoint is now a thin wrapper around the helper generate_extra_problem
     if 'user_dni' not in session:
         return jsonify({'error': 'No autorizado'}), 401
-    
-    data = request.json
+
+    data = request.json or {}
     topic = data.get('topic', 'matemáticas')
     difficulty = session.get('difficulty', 'intermedio')
-    
-    # Verificar límite diario
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    problems_today = queries_collection.count_documents({
-        'dni': session['user_dni'],
-        'timestamp': {'$gte': today},
-        'message': {'$regex': 'problema extra'}
-    })
-    
-    if problems_today >= 15:
-        return jsonify({'error': 'Límite diario alcanzado, vuelve mañana'})
-    
-    # Generar problema con Gemini
-    prompt = f"""Genera un problema de {topic} de nivel {difficulty} para un estudiante de secundaria. 
-    Incluye:
-    1. El enunciado del problema
-    2. Espacio para que el estudiante trabaje
-    3. NO incluyas la solución todavía
-    
-    Formato:
-    PROBLEMA:
-    [enunciado]
-    
-    DATOS:
-    [datos relevantes]
-    
-    PREGUNTA:
-    [qué se debe encontrar]"""
-    
-    response = model.generate_content(prompt)
-    problem = response.text
-    
-    # Guardar consulta
-    save_query(session['user_dni'], f"Problema extra de {topic}", problem, topic)
-    
+
+    result = generate_extra_problem(topic, session['user_dni'], difficulty)
+    if isinstance(result, tuple) and len(result) == 2:
+        # error (message, status)
+        return jsonify({'error': result[0]}), result[1]
+
+    # success -> return structured json
+    problem_text = result
+    save_query(session['user_dni'], f"Problema extra de {topic}", problem_text, topic)
+
     return jsonify({
-        'problem': problem,
+        'problem': problem_text,
         'topic': topic,
         'difficulty': difficulty
     })
+
+
+def generate_extra_problem(topic: str, user_dni: str, difficulty: str):
+    """Helper que genera el problema usando el modelo de IA (puede ser parcheado en tests).
+
+    Devuelve el texto del problema o una tupla (mensaje_error, status_code).
+    """
+    # Verificar límite diario
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    problems_today = queries_collection.count_documents({
+        'dni': user_dni,
+        'timestamp': {'$gte': today},
+        'message': {'$regex': 'problema extra'}
+    })
+
+    if problems_today >= 15:
+        return ("Límite diario alcanzado, vuelve mañana", 429)
+
+    # Construir prompt
+    prompt = f"Genera un problema de {topic} de nivel {difficulty} para un estudiante de secundaria.\nIncluye: 1) El enunciado del problema 2) Espacio para que el estudiante trabaje 3) NO incluyas la solución todavía.\nFormato:\nPROBLEMA:\n[enunciado]\n\nDATOS:\n[datos relevantes]\n\nPREGUNTA:\n[qué se debe encontrar]"
+
+    try:
+        response = model.generate_content(prompt)
+        problem = response.text
+        return problem
+    except Exception as e:
+        print(f"Error generando problema extra: {e}")
+        return ("Error al generar el problema, por favor intenta más tarde", 500)
 
 @app.route('/set_difficulty', methods=['POST'])
 def set_difficulty():
